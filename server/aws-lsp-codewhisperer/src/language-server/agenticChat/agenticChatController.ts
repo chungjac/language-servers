@@ -815,7 +815,7 @@ export class AgenticChatController implements ChatHandlers {
                     triggerContext.documentReference
                 )
             } else {
-                // Get the initial request input
+                // Get the initial request input // temp
                 const initialRequestInput = await this.#prepareRequestInput(
                     params,
                     session,
@@ -825,7 +825,7 @@ export class AgenticChatController implements ChatHandlers {
                     customContext
                 )
 
-                // Generate a unique ID for this prompt
+                // Generate a unique ID for this prompt // temp
                 const promptId = crypto.randomUUID()
                 session.setCurrentPromptId(promptId)
 
@@ -844,7 +844,7 @@ export class AgenticChatController implements ChatHandlers {
                 )
             }
 
-            // Result Handling - This happens only once
+            // Result Handling - This happens only once // again
             return await this.#handleFinalResult(
                 finalResult,
                 session,
@@ -855,7 +855,7 @@ export class AgenticChatController implements ChatHandlers {
                 chatResultStream
             )
         } catch (err) {
-            // HACK: the chat-client needs to have a partial event with the associated messageId sent before it can accept the final result.
+            // HACK: the chat-client needs to have a partial event with the associated messageId sent before it can accept the final result. // again
             // Without this, the `thinking` indicator never goes away.
             // Note: buttons being explicitly empty is required for this hack to work.
             const errorMessageId = `error-message-id-${uuid()}`
@@ -893,7 +893,7 @@ export class AgenticChatController implements ChatHandlers {
     }
 
     /**
-     * Prepares the initial request input for the chat prompt
+     * Prepares the initial request input for the chat prompt // here
      */
     async #prepareRequestInput(
         params: ChatParams,
@@ -923,7 +923,7 @@ export class AgenticChatController implements ChatHandlers {
     }
 
     /**
-     * Prepares the initial request input for the chat prompt
+     * Prepares the initial request input for the chat prompt // here
      */
     #getCompactionRequestInput(session: ChatSessionService): ChatCommandInput {
         this.#debug('Preparing compaction request input')
@@ -939,7 +939,7 @@ export class AgenticChatController implements ChatHandlers {
     }
 
     /**
-     * Runs the compaction, making requests and processing tool uses until completion
+     * Runs the compaction, making requests and processing tool uses until completion // 123
      */
     #shouldCompact(currentRequestCount: number): boolean {
         // 80% of 570K limit
@@ -952,7 +952,7 @@ export class AgenticChatController implements ChatHandlers {
     }
 
     /**
-     * Runs the compaction to compact history into a single summary
+     * Runs the compaction to compact history into a single summary / 123
      */
     async #runCompaction(
         compactionRequestInput: ChatCommandInput,
