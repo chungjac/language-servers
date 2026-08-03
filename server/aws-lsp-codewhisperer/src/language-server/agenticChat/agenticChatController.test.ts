@@ -52,7 +52,8 @@ import { AmazonQTokenServiceManager } from '../../shared/amazonQServiceManager/A
 import { AmazonQIAMServiceManager } from '../../shared/amazonQServiceManager/AmazonQIAMServiceManager'
 import { TabBarController } from './tabBarController'
 import { getUserPromptsDirectory, promptFileExtension } from './context/contextUtils'
-import { AdditionalContextProvider } from './context/additionalContextProvider'
+import { ACTIVE_EDITOR_CONTEXT_ID, AdditionalContextProvider } from './context/additionalContextProvider'
+import { AgenticChatTriggerContext } from './context/agenticChatTriggerContext'
 import { ContextCommandsProvider } from './context/contextCommandsProvider'
 import { ChatDatabase } from './tools/chatDb/chatDb'
 import { LocalProjectContextController } from '../../shared/localProjectContextController'
@@ -1620,6 +1621,96 @@ describe('AgenticChatController', () => {
                 )
 
                 getFileListFromContextStub.restore()
+            })
+        })
+
+        describe('active file fallback (onActiveEditorChanged / #getTriggerContext)', () => {
+            let getNewTriggerContextSpy: sinon.SinonSpy
+            let getPinnedContextStub: sinon.SinonStub
+            const cachedEditorUri = 'file:///cached-active.ts'
+
+            beforeEach(() => {
+                // Spy on getNewTriggerContext so we can inspect the params (and thus the textDocument)
+                // that the fallback logic forwards to trigger-context extraction.
+                getNewTriggerContextSpy = sinon.spy(AgenticChatTriggerContext.prototype, 'getNewTriggerContext')
+                getPinnedContextStub = sinon.stub(ChatDatabase.prototype, 'getPinnedContext')
+            })
+
+            afterEach(() => {
+                getNewTriggerContextSpy.restore()
+                getPinnedContextStub.restore()
+            })
+
+            it('caches the active editor reported via onActiveEditorChanged', async () => {
+                getPinnedContextStub.returns([{ id: ACTIVE_EDITOR_CONTEXT_ID, command: 'Active file', label: 'file' }])
+
+                await chatController.onActiveEditorChanged({ textDocument: { uri: cachedEditorUri } })
+
+                // With no textDocument on the prompt but the active-file pill pinned, the cached editor
+                // should be forwarded to getNewTriggerContext.
+                await chatController.onChatPrompt(
+                    { tabId: mockTabId, prompt: { prompt: 'Hello' } },
+                    mockCancellationToken
+                )
+
+                sinon.assert.called(getNewTriggerContextSpy)
+                const forwardedParams = getNewTriggerContextSpy.firstCall.firstArg
+                assert.strictEqual(forwardedParams.textDocument?.uri, cachedEditorUri)
+            })
+
+            it('falls back to cached active editor when prompt has no textDocument and active file is pinned', async () => {
+                getPinnedContextStub.returns([{ id: ACTIVE_EDITOR_CONTEXT_ID, command: 'Active file', label: 'file' }])
+                await chatController.onActiveEditorChanged({ textDocument: { uri: cachedEditorUri } })
+
+                await chatController.onChatPrompt(
+                    { tabId: mockTabId, prompt: { prompt: 'Hello' } },
+                    mockCancellationToken
+                )
+
+                const forwardedParams = getNewTriggerContextSpy.firstCall.firstArg
+                assert.strictEqual(forwardedParams.textDocument?.uri, cachedEditorUri)
+            })
+
+            it('does NOT fall back when the active file pill is not pinned', async () => {
+                getPinnedContextStub.returns([])
+                await chatController.onActiveEditorChanged({ textDocument: { uri: cachedEditorUri } })
+
+                await chatController.onChatPrompt(
+                    { tabId: mockTabId, prompt: { prompt: 'Hello' } },
+                    mockCancellationToken
+                )
+
+                const forwardedParams = getNewTriggerContextSpy.firstCall.firstArg
+                assert.strictEqual(forwardedParams.textDocument, undefined)
+            })
+
+            it('does NOT fall back when no active editor has been cached', async () => {
+                getPinnedContextStub.returns([{ id: ACTIVE_EDITOR_CONTEXT_ID, command: 'Active file', label: 'file' }])
+                // No onActiveEditorChanged call, so #lastActiveEditor is undefined.
+
+                await chatController.onChatPrompt(
+                    { tabId: mockTabId, prompt: { prompt: 'Hello' } },
+                    mockCancellationToken
+                )
+
+                const forwardedParams = getNewTriggerContextSpy.firstCall.firstArg
+                assert.strictEqual(forwardedParams.textDocument, undefined)
+            })
+
+            it('does not override an explicit textDocument on the prompt (common path)', async () => {
+                getPinnedContextStub.returns([{ id: ACTIVE_EDITOR_CONTEXT_ID, command: 'Active file', label: 'file' }])
+                await chatController.onActiveEditorChanged({ textDocument: { uri: cachedEditorUri } })
+
+                const promptUri = 'file:///explicit.ts'
+                await chatController.onChatPrompt(
+                    { tabId: mockTabId, prompt: { prompt: 'Hello' }, textDocument: { uri: promptUri } },
+                    mockCancellationToken
+                )
+
+                const forwardedParams = getNewTriggerContextSpy.firstCall.firstArg
+                assert.strictEqual(forwardedParams.textDocument?.uri, promptUri)
+                // Pinned context should not even be consulted on the common path.
+                sinon.assert.notCalled(getPinnedContextStub)
             })
         })
     })

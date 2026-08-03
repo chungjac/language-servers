@@ -66,6 +66,7 @@ import {
     FeedbackParams,
     InsertToCursorPositionParams,
     TextDocumentEdit,
+    TextDocumentIdentifier,
     TextEdit,
     InlineChatParams,
     ConversationClickParams,
@@ -151,7 +152,7 @@ import {
     AgenticChatTriggerContext,
     TriggerContext,
 } from './context/agenticChatTriggerContext'
-import { AdditionalContextProvider } from './context/additionalContextProvider'
+import { ACTIVE_EDITOR_CONTEXT_ID, AdditionalContextProvider } from './context/additionalContextProvider'
 import {
     getNewPromptFilePath,
     getNewRuleFilePath,
@@ -282,6 +283,18 @@ export class AgenticChatController implements ChatHandlers {
     #subscriptionStatusPromise: Promise<void> | undefined
     #origin: Origin
     #activeUserTracker: ActiveUserTracker
+
+    /**
+     * Last-known active editor reported by the IDE via `aws/chat/activeEditorChanged`.
+     *
+     * The "Active file" pinned-context pill has no path of its own: its content is sourced
+     * from `ChatParams.textDocument` on each prompt. Some IDE hosts omit `textDocument` when
+     * the chat input (not a text editor) holds focus at send time, which previously caused the
+     * active-file content to silently drop out. We cache the last active editor here so
+     * `#getTriggerContext` can fall back to it, ensuring the pinned active file keeps working
+     * across messages (including after unsaved edits, since the workspace returns the live buffer).
+     */
+    #lastActiveEditor?: TextDocumentIdentifier
 
     // latency metrics
     #llmRequestStartTime: number = 0
@@ -3833,6 +3846,14 @@ export class AgenticChatController implements ChatHandlers {
     }
 
     async onActiveEditorChanged(params: ActiveEditorChangedParams): Promise<void> {
+        // Cache the active editor so we can fall back to it when a chat prompt arrives without
+        // a textDocument (e.g. focus is in the chat input). This keeps the "Active file" pinned
+        // pill populated across messages. See #lastActiveEditor.
+        const previousUri = this.#lastActiveEditor?.uri
+        this.#lastActiveEditor = params.textDocument
+        this.#features.logging.debug(
+            `[ActiveFile] onActiveEditorChanged: uri=${params.textDocument?.uri ?? 'undefined'} (previous=${previousUri ?? 'undefined'})`
+        )
         if (this.#telemetryController.activeTabId) {
             this.sendPinnedContext(this.#telemetryController.activeTabId)
         }
@@ -4153,6 +4174,35 @@ export class AgenticChatController implements ChatHandlers {
 
         let triggerContext: TriggerContext
 
+        // The "Active file" pill has no path of its own — its content comes from params.textDocument.
+        // Some IDE hosts omit textDocument when the chat input holds focus at send time, which drops
+        // the active file out of context. If the active-file pill is pinned for this tab but the prompt
+        // arrived without a textDocument, fall back to the last active editor reported via
+        // onActiveEditorChanged so the pinned active file keeps working across messages.
+        //
+        // Only consult pinned context / the cached editor when textDocument is missing, so the common
+        // path (IDE supplied a textDocument) is untouched.
+        if (!params.textDocument && this.#lastActiveEditor) {
+            const activeFilePinned = this.#chatHistoryDb
+                .getPinnedContext(params.tabId)
+                .some(item => item.id === ACTIVE_EDITOR_CONTEXT_ID)
+            this.#features.logging.debug(
+                `[ActiveFile] #getTriggerContext tab=${params.tabId}: prompt arrived without textDocument; ` +
+                    `activeFilePinned=${activeFilePinned}, cachedActiveEditor=${this.#lastActiveEditor.uri}`
+            )
+            if (activeFilePinned) {
+                this.#features.logging.info(
+                    `[ActiveFile] Falling back to cached active editor for pinned active file: ${this.#lastActiveEditor.uri}`
+                )
+                params = { ...params, textDocument: this.#lastActiveEditor }
+            }
+        } else {
+            this.#features.logging.debug(
+                `[ActiveFile] #getTriggerContext tab=${params.tabId}: params.textDocument=${params.textDocument?.uri ?? 'undefined'}, ` +
+                    `cachedActiveEditor=${this.#lastActiveEditor?.uri ?? 'undefined'}`
+            )
+        }
+
         // this is the only way we can detect a follow up action
         // we can reuse previous trigger information
         if (lastMessageTrigger?.followUpActions?.has(params.prompt?.prompt ?? '')) {
@@ -4166,6 +4216,11 @@ export class AgenticChatController implements ChatHandlers {
             triggerContext = await this.#triggerContext.getNewTriggerContext(params)
             triggerContext.triggerType = this.#telemetryController.getCurrentTrigger(params.tabId) ?? 'click'
         }
+        this.#features.logging.debug(
+            `[ActiveFile] #getTriggerContext resolved: activeFilePath=${triggerContext.activeFilePath ?? 'undefined'}, ` +
+                `relativeFilePath=${triggerContext.relativeFilePath ?? 'undefined'}, ` +
+                `textLength=${triggerContext.text?.length ?? 0}, totalEditorCharacters=${triggerContext.totalEditorCharacters ?? 0}`
+        )
 
         metric.mergeWith({
             cwsprChatUserIntent: triggerContext?.userIntent,

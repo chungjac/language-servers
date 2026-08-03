@@ -324,10 +324,22 @@ export class AgenticChatTriggerContext {
         // Note: version is unused, and languageId can be determined from file extension.
         const syncedTextDocument = await this.#workspace.getTextDocument(uri)
         if (syncedTextDocument) {
+            // The synced document reflects the live editor buffer, including unsaved edits.
+            const syncedLength =
+                typeof syncedTextDocument.getText === 'function' ? syncedTextDocument.getText().length : undefined
+            this.#logging.debug(
+                `[ActiveFile] getTextDocumentFromUri: using synced (live buffer) document for ${uri} ` +
+                    `(length=${syncedLength ?? 'unknown'}, version=${syncedTextDocument.version})`
+            )
             return syncedTextDocument
         }
         try {
             const content = await this.#workspace.fs.readFile(URI.parse(uri).fsPath)
+            // Not synced with LSP: this returns on-disk content and will NOT reflect unsaved edits.
+            this.#logging.debug(
+                `[ActiveFile] getTextDocumentFromUri: document not synced, reading from disk for ${uri} ` +
+                    `(length=${content?.length ?? 'unknown'}); unsaved edits will not be visible`
+            )
             return TextDocument.create(uri, '', 0, content)
         } catch (err) {
             this.#logging.error(`Unable to load from ${uri}: ${err}`)

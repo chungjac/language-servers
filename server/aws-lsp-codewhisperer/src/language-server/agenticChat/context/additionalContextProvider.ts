@@ -429,9 +429,21 @@ export class AdditionalContextProvider {
         )
         // If Active File context pill was removed from pinned context, remove it from payload
         if (!contextInfo?.find(item => item.id === ACTIVE_EDITOR_CONTEXT_ID)) {
+            if (triggerContext.text !== undefined || triggerContext.cursorState !== undefined) {
+                this.features.logging.debug(
+                    `[ActiveFile] getAdditionalContext tab=${tabId}: active-editor pill NOT pinned; ` +
+                        `discarding active file content (textLength=${triggerContext.text?.length ?? 0}, ` +
+                        `activeFilePath=${triggerContext.activeFilePath ?? 'undefined'})`
+                )
+            }
             triggerContext.text = undefined
             triggerContext.cursorState = undefined
         } else {
+            this.features.logging.debug(
+                `[ActiveFile] getAdditionalContext tab=${tabId}: active-editor pill pinned; ` +
+                    `keeping active file content (textLength=${triggerContext.text?.length ?? 0}, ` +
+                    `activeFilePath=${triggerContext.activeFilePath ?? 'undefined'})`
+            )
             // Remove Active File from context list since its contents have already been added to triggerContext.text
             contextInfo = contextInfo.filter(item => item.id !== ACTIVE_EDITOR_CONTEXT_ID)
         }
