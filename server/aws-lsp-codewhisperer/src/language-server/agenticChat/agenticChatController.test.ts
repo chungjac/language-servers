@@ -52,7 +52,8 @@ import { AmazonQTokenServiceManager } from '../../shared/amazonQServiceManager/A
 import { AmazonQIAMServiceManager } from '../../shared/amazonQServiceManager/AmazonQIAMServiceManager'
 import { TabBarController } from './tabBarController'
 import { getUserPromptsDirectory, promptFileExtension } from './context/contextUtils'
-import { AdditionalContextProvider } from './context/additionalContextProvider'
+import { ACTIVE_EDITOR_CONTEXT_ID, AdditionalContextProvider } from './context/additionalContextProvider'
+import { AgenticChatTriggerContext } from './context/agenticChatTriggerContext'
 import { ContextCommandsProvider } from './context/contextCommandsProvider'
 import { ChatDatabase } from './tools/chatDb/chatDb'
 import { LocalProjectContextController } from '../../shared/localProjectContextController'
@@ -1620,6 +1621,67 @@ describe('AgenticChatController', () => {
                 )
 
                 getFileListFromContextStub.restore()
+            })
+        })
+
+        describe('active file fallback (non-file focus)', () => {
+            let getNewTriggerContextSpy: sinon.SinonSpy
+            let getPinnedContextStub: sinon.SinonStub
+            const fileUri = 'file:///workspace/active.ts'
+            const outputUri = 'output:amazonwebservices.amazon-q-vscode.Amazon%20Q%20Logs.log'
+
+            beforeEach(() => {
+                getNewTriggerContextSpy = sinon.spy(AgenticChatTriggerContext.prototype, 'getNewTriggerContext')
+                getPinnedContextStub = sinon.stub(ChatDatabase.prototype, 'getPinnedContext')
+                getPinnedContextStub.returns([{ id: ACTIVE_EDITOR_CONTEXT_ID, command: 'Active file', label: 'file' }])
+            })
+
+            afterEach(() => {
+                getNewTriggerContextSpy.restore()
+                getPinnedContextStub.restore()
+            })
+
+            it('caches a real file editor from a prompt and reuses it when focus is a non-file panel', async () => {
+                // First prompt: a real file is focused.
+                await chatController.onChatPrompt(
+                    { tabId: mockTabId, prompt: { prompt: 'whats in my file' }, textDocument: { uri: fileUri } },
+                    mockCancellationToken
+                )
+                assert.strictEqual(getNewTriggerContextSpy.firstCall.firstArg.textDocument?.uri, fileUri)
+
+                // Second prompt: focus moved to the output/logs panel (non-file scheme).
+                await chatController.onChatPrompt(
+                    { tabId: mockTabId, prompt: { prompt: 'whats in my file' }, textDocument: { uri: outputUri } },
+                    mockCancellationToken
+                )
+                // Should fall back to the cached real file editor, not the output: URI.
+                assert.strictEqual(getNewTriggerContextSpy.secondCall.firstArg.textDocument?.uri, fileUri)
+            })
+
+            it('caches a real file editor from onActiveEditorChanged and reuses it on a prompt with no textDocument', async () => {
+                chatController.onTabAdd({ tabId: mockTabId })
+                await chatController.onActiveEditorChanged({ textDocument: { uri: fileUri } })
+
+                await chatController.onChatPrompt(
+                    { tabId: mockTabId, prompt: { prompt: 'whats in my file' } },
+                    mockCancellationToken
+                )
+                assert.strictEqual(getNewTriggerContextSpy.firstCall.firstArg.textDocument?.uri, fileUri)
+            })
+
+            it('does not fall back when the active file pill is not pinned', async () => {
+                getPinnedContextStub.returns([])
+                await chatController.onChatPrompt(
+                    { tabId: mockTabId, prompt: { prompt: 'whats in my file' }, textDocument: { uri: fileUri } },
+                    mockCancellationToken
+                )
+                // Cache the file, then switch to a non-file panel with pill unpinned.
+                await chatController.onChatPrompt(
+                    { tabId: mockTabId, prompt: { prompt: 'whats in my file' }, textDocument: { uri: outputUri } },
+                    mockCancellationToken
+                )
+                // Non-file URI is passed through unchanged (no fallback applied).
+                assert.strictEqual(getNewTriggerContextSpy.secondCall.firstArg.textDocument?.uri, outputUri)
             })
         })
     })

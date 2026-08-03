@@ -66,6 +66,7 @@ import {
     FeedbackParams,
     InsertToCursorPositionParams,
     TextDocumentEdit,
+    TextDocumentIdentifier,
     TextEdit,
     InlineChatParams,
     ConversationClickParams,
@@ -151,7 +152,7 @@ import {
     AgenticChatTriggerContext,
     TriggerContext,
 } from './context/agenticChatTriggerContext'
-import { AdditionalContextProvider } from './context/additionalContextProvider'
+import { ACTIVE_EDITOR_CONTEXT_ID, AdditionalContextProvider } from './context/additionalContextProvider'
 import {
     getNewPromptFilePath,
     getNewRuleFilePath,
@@ -282,6 +283,18 @@ export class AgenticChatController implements ChatHandlers {
     #subscriptionStatusPromise: Promise<void> | undefined
     #origin: Origin
     #activeUserTracker: ActiveUserTracker
+
+    /**
+     * Last-known active editor whose URI is a real `file:` document, keyed by tabId.
+     *
+     * The "Active file" pinned pill has no path of its own — its content is sourced from
+     * ChatParams.textDocument on each prompt. But VS Code reports the *focused* editor as the
+     * active one, which can be a non-file panel (e.g. the "output:" logs view) at send time. In
+     * that case textDocument points at a scheme we can't read, and the pinned active file resolves
+     * to nothing. We remember the last real file editor per tab so #getTriggerContext can fall back
+     * to it. Content is always read live from the workspace by URI, so unsaved edits are included.
+     */
+    #lastActiveFileEditor: Map<string, TextDocumentIdentifier> = new Map()
 
     // latency metrics
     #llmRequestStartTime: number = 0
@@ -3833,9 +3846,27 @@ export class AgenticChatController implements ChatHandlers {
     }
 
     async onActiveEditorChanged(params: ActiveEditorChangedParams): Promise<void> {
-        if (this.#telemetryController.activeTabId) {
-            this.sendPinnedContext(this.#telemetryController.activeTabId)
+        const activeTabId = this.#telemetryController.activeTabId
+        if (activeTabId) {
+            // Remember the last real file editor so a later prompt can fall back to it when focus is
+            // on a non-file panel (e.g. the output/logs view). See #lastActiveFileEditor.
+            if (this.#isReadableFileUri(params.textDocument?.uri)) {
+                this.#lastActiveFileEditor.set(activeTabId, params.textDocument!)
+                this.#features.logging.debug(
+                    `[ActiveFile] onActiveEditorChanged: cached file editor for tab=${activeTabId}: ${params.textDocument!.uri}`
+                )
+            }
+            this.sendPinnedContext(activeTabId)
         }
+    }
+
+    /**
+     * Returns true when the URI is a real, readable file document (file: scheme). Non-file schemes
+     * such as output:, vscode-*, or untitled: cannot be read from the workspace/filesystem and must
+     * not be treated as the active file.
+     */
+    #isReadableFileUri(uri: string | undefined): boolean {
+        return !!uri && uri.startsWith('file:')
     }
 
     async onCodeInsertToCursorPosition(params: InsertToCursorPositionParams) {
@@ -4150,6 +4181,29 @@ export class AgenticChatController implements ChatHandlers {
 
     async #getTriggerContext(params: ChatParams, metric: Metric<CombinedConversationEvent>) {
         const lastMessageTrigger = this.#telemetryController.getLastMessageTrigger(params.tabId)
+
+        // The "Active file" pinned pill sources its content from params.textDocument, which the IDE
+        // sets to the *focused* editor. That focus may be a non-file panel (e.g. the output/logs
+        // view) at send time, giving a textDocument we cannot read (or none at all). To keep the
+        // pinned active file working, remember the last real file editor per tab and fall back to it.
+        if (this.#isReadableFileUri(params.textDocument?.uri)) {
+            this.#lastActiveFileEditor.set(params.tabId, params.textDocument!)
+        } else {
+            const activeFilePinned = this.#chatHistoryDb
+                .getPinnedContext(params.tabId)
+                .some(item => item.id === ACTIVE_EDITOR_CONTEXT_ID)
+            const cached = this.#lastActiveFileEditor.get(params.tabId)
+            this.#features.logging.debug(
+                `[ActiveFile] #getTriggerContext tab=${params.tabId}: incoming textDocument=${params.textDocument?.uri ?? 'undefined'} ` +
+                    `is not a readable file; activeFilePinned=${activeFilePinned}, cachedFileEditor=${cached?.uri ?? 'undefined'}`
+            )
+            if (activeFilePinned && cached) {
+                this.#features.logging.info(
+                    `[ActiveFile] Falling back to cached file editor for pinned active file: ${cached.uri}`
+                )
+                params = { ...params, textDocument: cached }
+            }
+        }
 
         let triggerContext: TriggerContext
 
