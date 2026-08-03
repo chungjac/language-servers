@@ -427,7 +427,11 @@ export class AdditionalContextProvider {
                 )
                 .map(item => ({ ...item, pinned: true }))
         )
-        // If Active File context pill was removed from pinned context, remove it from payload
+        // The pinned "Active file" is delivered as a pinned-context entry (see activeFileEntry below)
+        // rather than through the per-message editorState.document. editorState is frozen into chat
+        // history on every turn and goes stale after edits; the pinned-context channel is regenerated
+        // fresh each turn and is never persisted, so the model always sees the current file.
+        let activeFileEntry: AdditionalContentEntryAddition | undefined
         if (!contextInfo?.find(item => item.id === ACTIVE_EDITOR_CONTEXT_ID)) {
             if (triggerContext.text !== undefined || triggerContext.cursorState !== undefined) {
                 this.features.logging.debug(
@@ -439,13 +443,38 @@ export class AdditionalContextProvider {
             triggerContext.text = undefined
             triggerContext.cursorState = undefined
         } else {
-            this.features.logging.debug(
-                `[ActiveFile] getAdditionalContext tab=${tabId}: active-editor pill pinned; ` +
-                    `keeping active file content (textLength=${triggerContext.text?.length ?? 0}, ` +
-                    `activeFilePath=${triggerContext.activeFilePath ?? 'undefined'})`
-            )
-            // Remove Active File from context list since its contents have already been added to triggerContext.text
+            // Remove Active File from the context command list; it is not resolved by path (it may
+            // have unsaved edits), so we build its entry directly from the live buffer content.
             contextInfo = contextInfo.filter(item => item.id !== ACTIVE_EDITOR_CONTEXT_ID)
+
+            if (triggerContext.text && triggerContext.activeFilePath && triggerContext.relativeFilePath) {
+                activeFileEntry = {
+                    name: path.basename(triggerContext.relativeFilePath),
+                    description: '',
+                    innerContext: triggerContext.text.substring(0, workspaceChunkMaxSize),
+                    type: 'file',
+                    path: triggerContext.activeFilePath,
+                    relativePath: triggerContext.relativeFilePath,
+                    startLine: -1,
+                    endLine: -1,
+                    pinned: true,
+                }
+                this.features.logging.debug(
+                    `[ActiveFile] getAdditionalContext tab=${tabId}: routing pinned active file through ` +
+                        `pinnedContext (textLength=${triggerContext.text.length}, activeFilePath=${triggerContext.activeFilePath})`
+                )
+            } else {
+                this.features.logging.debug(
+                    `[ActiveFile] getAdditionalContext tab=${tabId}: active-editor pill pinned but no active ` +
+                        `file content available (textLength=${triggerContext.text?.length ?? 0}, ` +
+                        `activeFilePath=${triggerContext.activeFilePath ?? 'undefined'})`
+                )
+            }
+
+            // Clear cursorState so editorState.document is NOT built (see getChatParamsFromTrigger),
+            // preventing the active file content from being persisted into chat history. triggerContext.text
+            // is kept for the focus-file metric and the controller's transparency-list dedup guard.
+            triggerContext.cursorState = undefined
         }
 
         // Handle code symbol ID mismatches between indexing sessions
@@ -537,7 +566,7 @@ export class AdditionalContextProvider {
         if (promptContextCommands.length === 0 && pinnedContextCommands.length === 0) {
             // image context does not come from workspace
             const imageContext = this.getImageContextEntries(tabId, context)
-            return [...imageContext.nonPinned, ...imageContext.pinned]
+            return [...imageContext.nonPinned, ...imageContext.pinned, ...(activeFileEntry ? [activeFileEntry] : [])]
         }
 
         let promptContextPrompts: AdditionalContextPrompt[] = []
@@ -636,7 +665,7 @@ export class AdditionalContextProvider {
         // Append pinned context entries (docs and images)
         const pinnedDocs = docEntries.filter(entry => entry.pinned)
         const pinnedImages = imageContext.pinned
-        return [...ordered, ...pinnedDocs, ...pinnedImages]
+        return [...ordered, ...pinnedDocs, ...pinnedImages, ...(activeFileEntry ? [activeFileEntry] : [])]
     }
 
     getFileListFromContext(context: AdditionalContentEntryAddition[]): FileList {

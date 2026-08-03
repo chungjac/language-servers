@@ -275,7 +275,7 @@ describe('AdditionalContextProvider', () => {
             ;(path.join as sinon.SinonStub).restore()
         })
 
-        it('should handle Active File context correctly', async () => {
+        it('should route pinned Active File through pinnedContext and clear cursorState', async () => {
             const mockWorkspaceFolder = {
                 uri: URI.file('/workspace').toString(),
                 name: 'test',
@@ -286,6 +286,8 @@ describe('AdditionalContextProvider', () => {
 
                 text: 'active file content',
                 cursorState: { position: { line: 1, character: 0 } },
+                activeFilePath: '/workspace/active.ts',
+                relativeFilePath: 'active.ts',
             }
 
             const contextWithActiveFile = [{ id: 'active-editor', command: 'Active file', label: 'file' }]
@@ -296,9 +298,18 @@ describe('AdditionalContextProvider', () => {
 
             const result = await provider.getAdditionalContext(triggerContext, 'tab1')
 
-            // Active file should be preserved in triggerContext but not added to result
+            // text is kept (focus-file metric + controller dedup), but cursorState is cleared so
+            // editorState.document is not built and thus not persisted into chat history.
             assert.strictEqual(triggerContext.text, 'active file content')
-            assert.strictEqual(triggerContext.cursorState?.position?.line, 1)
+            assert.strictEqual(triggerContext.cursorState, undefined)
+
+            // The active file is returned as a pinned file entry carrying the live buffer content.
+            const activeEntry = result.find(item => item.path === '/workspace/active.ts')
+            assert.ok(activeEntry, 'active file should be returned as a pinned context entry')
+            assert.strictEqual(activeEntry?.pinned, true)
+            assert.strictEqual(activeEntry?.type, 'file')
+            assert.strictEqual(activeEntry?.innerContext, 'active file content')
+            assert.strictEqual(activeEntry?.relativePath, 'active.ts')
         })
 
         it('should remove Active File context when not in pinned context', async () => {
